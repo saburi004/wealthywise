@@ -1,4 +1,6 @@
 "use client";
+import { auth, provider, signInWithPopup } from '../lib/firebase'; // already provided
+
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { DollarSign, ArrowRight, Eye, EyeOff, Mail, Lock, Coins, Landmark, PiggyBank, Wallet } from 'lucide-react';
@@ -69,6 +71,45 @@ export default function WealthyWiseAuth() {
     setLoading(false);
   }
 };
+const handleGoogleLogin = async () => {
+  setLoading(true);
+  setMessage('');
+  
+  try {
+    const result = await signInWithPopup(auth, provider);
+    const user = result.user;
+
+    const response = await fetch('/api/auth/google', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: user.email,
+        name: user.displayName,
+        photoURL: user.photoURL,
+        googleId: user.uid,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (response.ok && data.token) {
+      localStorage.setItem('wealthywise_token', data.token);
+      setToken(data.token);
+      setMessage('Login successful! Redirecting...');
+    } else {
+      setMessage(data.message || 'Google login failed');
+    }
+
+  } catch (error) {
+    console.error('Google login error:', error);
+    setMessage('Google login failed');
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#A8F1FF] to-white relative overflow-hidden flex items-center justify-center">
@@ -138,6 +179,8 @@ export default function WealthyWiseAuth() {
             >
               Login
             </button>
+             
+
             <button
               onClick={() => {
                 setActiveTab('register');
@@ -211,12 +254,16 @@ export default function WealthyWiseAuth() {
               </div>
             )}
 
-            {/* Submit Button */}
+          {/* Google Login Button */}
+
+
             <button
               onClick={handleSubmit}
               disabled={loading || !email || !password}
               className="w-full bg-gradient-to-r from-[#1E3A8A] to-[#4ED7F1] text-white py-3 px-6 rounded-lg font-semibold hover:from-[#4ED7F1] hover:to-[#1E3A8A] transform hover:scale-105 transition-all duration-200 flex items-center justify-center space-x-2 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
             >
+              
+
               {loading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
               ) : (
@@ -226,7 +273,23 @@ export default function WealthyWiseAuth() {
                 </>
               )}
             </button>
+            {/* Google Login Button */}
+<button
+  type="button"
+  onClick={handleGoogleLogin}
+  className="w-full mt-4 bg-white border border-[#4ED7F1] text-[#1E3A8A] py-3 px-6 rounded-lg font-semibold hover:bg-[#E0F7FF] transform hover:scale-105 transition-all duration-200 flex items-center justify-center space-x-3 shadow-md"
+>
+  <img
+    src="https://www.svgrepo.com/show/475656/google-color.svg"
+    alt="Google logo"
+    className="w-5 h-5"
+  />
+  <span>Continue with Google</span>
+</button>
+
+            
           </div>
+
         </div>
       </div>
     </div>
