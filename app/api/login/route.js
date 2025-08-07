@@ -10,7 +10,7 @@ export async function POST(request) {
     
     const { email, password } = await request.json();
     
-    // Find user and verify password
+   
     const user = await User.findOne({ email }).select('+password');
     if (!user || !(await user.comparePassword(password))) {
       return NextResponse.json(
@@ -19,14 +19,13 @@ export async function POST(request) {
       );
     }
 
-    // Generate token
     const token = jwt.sign(
       { userId: user._id, email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
 
-    // Return user without password
+  
     const userWithoutPassword = user.toObject();
     delete userWithoutPassword.password;
 
