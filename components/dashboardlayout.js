@@ -9,7 +9,7 @@ export default function DashboardLayout({ children }) {
   const navItems = [
     { id: 'profile', icon: <User className="w-5 h-5" />, label: 'Profile' },
     { id: 'statistics', icon: <LineChart className="w-5 h-5" />, label: 'Statistics' },
-    { id: 'transactions', icon: <CreditCard className="w-5 h-5" />, label: 'Transactions' },
+    { id: 'transaction', icon: <CreditCard className="w-5 h-5" />, label: 'Transactions' },
     { id: 'investments', icon: <PieChart className="w-5 h-5" />, label: 'Investments' }
   ];
 
