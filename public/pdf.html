@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Transaction Extractor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .transaction-row:hover {
+            background-color: #f0f9ff;
+        }
+        .save-btn {
+            transition: all 0.2s;
+        }
+        .save-btn.saved {
+            background-color: #10b981 !important;
+        }
+    </style>
+</head>
+<body class="bg-blue-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
+            <h1 class="text-2xl font-semibold text-blue-800 mb-2">PDF Transaction Extractor</h1>
+            <p class="text-blue-600 mb-6">Upload your bank statement or credit card PDF to extract and categorize transaction data</p>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-blue-700 font-medium mb-2" for="pdfFile">PDF File</label>
+                    <input type="file" id="pdfFile" accept=".pdf" 
+                        class="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                
+                <div>
+                    <label class="block text-blue-700 font-medium mb-2" for="pdfPassword">Password (if required)</label>
+                    <input type="password" id="pdfPassword" placeholder="Enter PDF password" 
+                        class="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                
+                <button id="extractBtn" onclick="extractTables()" 
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition duration-200">
+                    Extract Transactions
+                </button>
+            </div>
+        </div>
+        
+        <div id="status" class="mb-6"></div>
+        
+        <div id="results" class="space-y-6"></div>
+    </div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        let extractedData = null;
+        const categories = [
+            'Food & Dining',
+            'Entertainment',
+            'Shopping',
+            'Bills & Utilities',
+            'Transportation',
+            'Travel',
+            'Healthcare',
+            'Personal Care',
+            'Education',
+            'Gifts & Donations',
+            'Investments',
+            'Salary',
+            'Other Income',
+            'Uncategorized'
+        ];
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            let bgColor = 'bg-blue-100 text-blue-800';
+            if (type === 'error') bgColor = 'bg-red-100 text-red-800';
+            if (type === 'success') bgColor = 'bg-green-100 text-green-800';
+            
+            statusDiv.innerHTML = `<div class="p-4 rounded-lg ${bgColor}">${message}</div>`;
+        }
+
+        async function extractTables() {
+            const fileInput = document.getElementById('pdfFile');
+            const passwordInput = document.getElementById('pdfPassword');
+            const extractBtn = document.getElementById('extractBtn');
+            
+            if (!fileInput.files[0]) {
+                showStatus('Please select a PDF file', 'error');
+                return;
+            }
+
+            extractBtn.disabled = true;
+            extractBtn.innerHTML = '<span class="animate-pulse">Processing...</span>';
+            showStatus('Processing PDF document...', 'info');
+            
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '';
+
+            try {
+                const file = fileInput.files[0];
+                const arrayBuffer = await file.arrayBuffer();
+                const password = passwordInput.value || null;
+
+                const loadingTask = pdfjsLib.getDocument({
+                    data: arrayBuffer,
+                    password: password
+                });
+
+                const pdf = await loadingTask.promise;
+                showStatus(`Processing ${pdf.numPages} pages...`, 'info');
+
+                const allTables = [];
+                
+                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
+                    const textContent = await page.getTextContent();
+                    
+                    const pageTables = await extractTablesFromPage(textContent, pageNum);
+                    allTables.push(...pageTables);
+                }
+
+                extractedData = {
+                    filename: file.name,
+                    totalPages: pdf.numPages,
+                    extractedAt: new Date().toISOString(),
+                    tables: allTables
+                };
+
+                displayResults(allTables);
+                showStatus(`Successfully extracted ${allTables.length} tables`, 'success');
+
+            } catch (error) {
+                console.error('Error:', error);
+                showStatus(`Error: ${error.message}`, 'error');
+            } finally {
+                extractBtn.disabled = false;
+                extractBtn.textContent = 'Extract Transactions';
+            }
+        }
+
+        async function extractTablesFromPage(textContent, pageNum) {
+            const items = textContent.items;
+            const lineGroups = groupTextItemsByLine(items);
+            const tables = [];
+
+            // Try to detect bank statement tables
+            const bankTableInfo = detectBankStatementTable(lineGroups, pageNum);
+            if (bankTableInfo.isTable) {
+                const bankTable = extractTableData(lineGroups, bankTableInfo, pageNum, 'bank_statement');
+                if (bankTable.rows.length > 0) {
+                    tables.push(bankTable);
+                }
+            }
+
+            // Try to detect credit card tables
+            const creditCardTables = detectCreditCardTables(lineGroups, pageNum);
+            creditCardTables.forEach(tableInfo => {
+                const creditTable = extractTableData(lineGroups, tableInfo, pageNum, 'credit_card');
+                if (creditTable.rows.length > 0) {
+                    tables.push(creditTable);
+                }
+            });
+
+            return tables;
+        }
+
+        function displayResults(tables) {
+            const resultsDiv = document.getElementById('results');
+            
+            if (tables.length === 0) {
+                resultsDiv.innerHTML = `
+                    <div class="bg-white rounded-xl shadow-md p-6">
+                        <p class="text-blue-600">No transaction tables found in the document.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            tables.forEach((table, tableIndex) => {
+                const tableType = table.tableType === 'credit_card' ? 'Credit Card' : 'Bank Statement';
+                const tableCard = document.createElement('div');
+                tableCard.className = 'bg-white rounded-xl shadow-md overflow-hidden';
+                
+                tableCard.innerHTML = `
+                    <div class="bg-blue-100 px-6 py-3 border-b border-blue-200">
+                        <h3 class="font-medium text-blue-800">${tableType} Transactions - Page ${table.page}</h3>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-blue-50">
+                                <tr>
+                                    ${table.headers.map(header => `<th class="px-4 py-3 text-left text-sm font-medium text-blue-700">${header.replace(/_/g, ' ')}</th>`).join('')}
+                                    <th class="px-4 py-3 text-left text-sm font-medium text-blue-700">Category</th>
+                                    <th class="px-4 py-3 text-left text-sm font-medium text-blue-700">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body-${tableIndex}">
+                                <!-- Rows will be inserted here -->
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                
+                resultsDiv.appendChild(tableCard);
+                
+                const tbody = document.getElementById(`table-body-${tableIndex}`);
+                table.rows.forEach((row, rowIndex) => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'transaction-row border-b border-blue-100 last:border-0';
+                    tr.id = `row-${tableIndex}-${rowIndex}`;
+                    
+                    // Add data cells
+                    table.headers.forEach(header => {
+                        let value = row[header] || '';
+                        if (typeof value === 'object' && value.display) {
+                            value = value.display;
+                        }
+                        
+                        const td = document.createElement('td');
+                        td.className = 'px-4 py-3 text-sm text-blue-900';
+                        td.textContent = value;
+                        tr.appendChild(td);
+                    });
+                    
+                    // Add category dropdown cell
+                    const categoryTd = document.createElement('td');
+                    categoryTd.className = 'px-4 py-3 text-sm';
+                    
+                    const categorySelect = document.createElement('select');
+                    categorySelect.className = 'category-select w-full px-2 py-1 border border-gray-300 rounded-md text-sm';
+                    categorySelect.dataset.tableIndex = tableIndex;
+                    categorySelect.dataset.rowIndex = rowIndex;
+                    
+                    // Add default option
+                    const defaultOption = document.createElement('option');
+                    defaultOption.value = '';
+                    defaultOption.textContent = 'Select Category';
+                    defaultOption.selected = true;
+                    categorySelect.appendChild(defaultOption);
+                    
+                    // Add all categories
+                    categories.forEach(category => {
+                        const option = document.createElement('option');
+                        option.value = category;
+                        option.textContent = category;
+                        categorySelect.appendChild(option);
+                    });
+                    
+                    categoryTd.appendChild(categorySelect);
+                    tr.appendChild(categoryTd);
+                    
+                    // Add save button cell
+                    const actionTd = document.createElement('td');
+                    actionTd.className = 'px-4 py-3 text-sm';
+                    
+                    const saveBtn = document.createElement('button');
+                    saveBtn.className = 'save-btn bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium py-1 px-3 rounded';
+                    saveBtn.textContent = 'Save';
+                    saveBtn.dataset.tableIndex = tableIndex;
+                    saveBtn.dataset.rowIndex = rowIndex;
+                    saveBtn.onclick = function() {
+                        saveCategory(this);
+                    };
+                    
+                    actionTd.appendChild(saveBtn);
+                    tr.appendChild(actionTd);
+                    
+                    tbody.appendChild(tr);
+                });
+            });
+        }
+
+        function saveCategory(button) {
+            const tableIndex = button.dataset.tableIndex;
+            const rowIndex = button.dataset.rowIndex;
+            const rowId = `row-${tableIndex}-${rowIndex}`;
+            const row = document.getElementById(rowId);
+            
+            const select = row.querySelector('.category-select');
+            const selectedCategory = select.value;
+            
+            if (!selectedCategory) {
+                showStatus('Please select a category before saving', 'error');
+                return;
+            }
+            
+            // Update button to show success
+            button.textContent = 'Saved!';
+            button.classList.add('saved');
+            
+            // Disable the select and button
+            select.disabled = true;
+            button.disabled = true;
+            
+            // Update the extracted data with the category
+            if (extractedData && extractedData.tables[tableIndex] && extractedData.tables[tableIndex].rows[rowIndex]) {
+                extractedData.tables[tableIndex].rows[rowIndex].category = selectedCategory;
+            }
+            
+            showStatus('Category saved successfully', 'success');
+            
+            // Reset button after 2 seconds
+            setTimeout(() => {
+                button.textContent = 'Saved';
+            }, 2000);
+        }
+
+        // Helper functions (same as in your original code)
+        function groupTextItemsByLine(items) {
+            const lineMap = new Map();
+            const tolerance = 3;
+
+            items.forEach(item => {
+                if (!item.str || !item.str.trim()) return;
+
+                const y = Math.round(item.transform[5]);
+                let targetY = y;
+
+                for (let existingY of lineMap.keys()) {
+                    if (Math.abs(existingY - y) <= tolerance) {
+                        targetY = existingY;
+                        break;
+                    }
+                }
+
+                if (!lineMap.has(targetY)) {
+                    lineMap.set(targetY, []);
+                }
+                lineMap.get(targetY).push({
+                    text: item.str.trim(),
+                    x: Math.round(item.transform[4]),
+                    y: y,
+                    width: item.width,
+                    height: item.height
+                });
+            });
+
+            return Array.from(lineMap.entries())
+                .sort((a, b) => b[0] - a[0])
+                .map(([y, items]) => ({
+                    y: y,
+                    items: items.sort((a, b) => a.x - b.x),
+                    text: items.map(item => item.text).join(' ').trim()
+                }));
+        }
+
+        function detectBankStatementTable(lineGroups, pageNum) {
+            let headerLine = -1;
+            let headers = [];
+            let columnPositions = [];
+            let tableStartLine = -1;
+            let tableEndLine = -1;
+
+            const bankHeaderPatterns = [
+                /^(sl|s\.?no|sr\.?no|serial|#)/i,
+                /^(date|dt|trans.*date|value.*date)/i,
+                /^(particulars|description|details|transaction|narration|mode)/i,
+                /^(chq|cheque|check|ref)/i,
+                /^(withdrawal|debit|dr|paid|withdrawals)/i,
+                /^(deposit|credit|cr|received)/i,
+                /^(balance|bal|amount)/i
+            ];
+
+            for (let i = 0; i < lineGroups.length; i++) {
+                const line = lineGroups[i];
+                if (line.items.length < 3) continue;
+
+                const texts = line.items.map(item => item.text.toLowerCase().trim());
+                let headerMatches = 0;
+                let totalWords = texts.filter(t => t.length > 0).length;
+
+                texts.forEach(text => {
+                    if (bankHeaderPatterns.some(pattern => pattern.test(text))) {
+                        headerMatches++;
+                    }
+                });
+
+                const requiredMatches = totalWords >= 5 ? 3 : 2;
+
+                if (headerMatches >= requiredMatches && line.items.length >= 3) {
+                    headerLine = i;
+                    headers = line.items.map(item => normalizeHeader(item.text));
+                    columnPositions = line.items.map(item => item.x);
+                    tableStartLine = i + 1;
+                    break;
+                }
+            }
+
+            if (headerLine === -1) {
+                const tableInfo = detectTableByDataPattern(lineGroups, pageNum);
+                if (tableInfo.isTable) {
+                    return { ...tableInfo, tableType: 'bank_statement' };
+                }
+                return { isTable: false };
+            }
+
+            tableEndLine = findTableEnd(lineGroups, tableStartLine, headers, pageNum);
+
+            return {
+                isTable: true,
+                headerLine,
+                headers,
+                columnPositions,
+                startLine: tableStartLine,
+                endLine: tableEndLine,
+                tableType: 'bank_statement'
+            };
+        }
+
+        function detectCreditCardTables(lineGroups, pageNum) {
+            const tables = [];
+            const creditCardHeaderPatterns = [
+                /^(date|trans.*date|posting.*date)/i,
+                /^(transaction.*description|description|particulars|details)/i,
+                /^(amount|amt|transaction.*amount)/i,
+                /^(reference|ref.*no|auth.*code)/i
+            ];
+
+            for (let i = 0; i < lineGroups.length; i++) {
+                const line = lineGroups[i];
+                if (line.items.length < 2) continue;
+
+                const texts = line.items.map(item => item.text.toLowerCase().trim());
+                let headerMatches = 0;
+
+                texts.forEach(text => {
+                    if (creditCardHeaderPatterns.some(pattern => pattern.test(text))) {
+                        headerMatches++;
+                    }
+                });
+
+                if ((headerMatches >= 2) || 
+                    (texts.some(t => t.includes('date')) && texts.some(t => t.includes('amount')))) {
+                    
+                    const headers = line.items.map(item => normalizeCreditCardHeader(item.text));
+                    const columnPositions = line.items.map(item => item.x);
+                    const tableStartLine = i + 1;
+                    const tableEndLine = findCreditCardTableEnd(lineGroups, tableStartLine, headers, pageNum);
+
+                    tables.push({
+                        isTable: true,
+                        headerLine: i,
+                        headers,
+                        columnPositions,
+                        startLine: tableStartLine,
+                        endLine: tableEndLine,
+                        tableType: 'credit_card'
+                    });
+                }
+                
+            }
+
+            return tables;
+        }
+
+        function extractTableData(lineGroups, tableInfo, pageNum, tableType) {
+            if (!tableInfo.isTable) {
+                return { page: pageNum, headers: [], rows: [], tableType };
+            }
+
+            const tableLines = lineGroups.slice(tableInfo.startLine, tableInfo.endLine + 1);
+            const tableRows = extractRowsFromTableRegion(
+                tableLines, 
+                tableInfo.headers, 
+                tableInfo.columnPositions, 
+                pageNum, 
+                tableType
+            );
+            const validRows = validateAndCleanRows(tableRows, tableInfo.headers, pageNum, tableType);
+
+            return {
+                page: pageNum,
+                headers: tableInfo.headers,
+                rows: validRows,
+                tableType: tableType
+            };
+        }
+
+        function normalizeHeader(header) {
+            const normalized = header.toLowerCase().trim();
+            const mappings = {
+                'sl': 'serial_number',
+                's.no': 'serial_number',
+                'sr.no': 'serial_number',
+                'particulars': 'description',
+                'transaction details': 'description',
+                'narration': 'description',
+                'chq num': 'cheque_number',
+                'cheque no': 'cheque_number',
+                'withdrawal': 'debit',
+                'dr': 'debit',
+                'deposit': 'credit',
+                'cr': 'credit',
+                'value date': 'value_date',
+                'trans date': 'transaction_date',
+                'bal': 'balance'
+            };
+            return mappings[normalized] || normalized.replace(/[^a-z0-9]/g, '_');
+        }
+
+        function normalizeCreditCardHeader(header) {
+            const normalized = header.toLowerCase().trim();
+            const mappings = {
+                'transaction description': 'description',
+                'particulars': 'description',
+                'trans date': 'date',
+                'posting date': 'posting_date',
+                'amt': 'amount',
+                'amount (in rs.)': 'amount',
+                'ref no': 'reference_number'
+            };
+            return mappings[normalized] || normalized.replace(/[^a-z0-9]/g, '_');
+        }
+
+        function cleanAndParseValue(value, tableType) {
+            if (!value || typeof value !== 'string') return value;
+
+            const cleaned = value.trim();
+            if (!cleaned) return null;
+
+            if (tableType === 'credit_card' && isCreditCardAmount(cleaned)) {
+                const match = cleaned.match(/^(.+?)\s*(cr|dr)\s*$/i);
+                if (match) {
+                    const amount = parseFloat(match[1].replace(/[,\s₹$]/g, ''));
+                    const type = match[2].toLowerCase();
+                    return {
+                        amount: isNaN(amount) ? cleaned : amount,
+                        type: type,
+                        display: cleaned
+                    };
+                }
+            }
+
+            if (isNumericAmount(cleaned)) {
+                const numericValue = parseFloat(cleaned.replace(/[,\s₹$]/g, ''));
+                return isNaN(numericValue) ? cleaned : numericValue;
+            }
+
+            if (isDateFormat(cleaned)) {
+                return cleaned;
+            }
+
+            return cleaned.length > 300 ? cleaned.substring(0, 300) + '...' : cleaned;
+        }
+
+        function isCreditCardAmount(str) {
+            if (!str || typeof str !== 'string') return false;
+            const cleanStr = str.replace(/[,\s₹$]/g, '').replace(/\s*(cr|dr)\s*$/i, '');
+            return /^\d*\.?\d+$/.test(cleanStr) && !isNaN(parseFloat(cleanStr));
+        }
+
+        function isNumericAmount(str) {
+            if (!str || typeof str !== 'string') return false;
+            const cleanStr = str.replace(/[,\s₹$]/g, '');
+            return /^\d*\.?\d+$/.test(cleanStr) && !isNaN(parseFloat(cleanStr));
+        }
+
+        function isDateFormat(str) {
+            if (!str || typeof str !== 'string') return false;
+            const trimmed = str.trim();
+
+            const datePatterns = [
+                /^\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}$/,
+                /^\d{2,4}[-\/]\d{1,2}[-\/]\d{1,2}$/,
+                /^\d{1,2}-[A-Za-z]{3}-\d{2,4}$/,
+                /^\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4}$/,
+                /^\d{1,2}[A-Za-z]{3}\d{2,4}$/
+            ];
+
+            return datePatterns.some(pattern => pattern.test(trimmed));
+        }
+
+        function findTableEnd(lineGroups, startLine, headers, pageNum) {
+            let endLine = lineGroups.length - 1;
+            let consecutiveInvalidLines = 0;
+            const maxConsecutiveInvalid = 10;
+
+            const endPatterns = [
+                /^(total|grand total|balance|closing balance|end of|continued|page \d+)/i,
+                /^\*+|^-+|^=+$/
+            ];
+
+            for (let i = startLine; i < lineGroups.length; i++) {
+                const line = lineGroups[i];
+                const lineText = line.text.toLowerCase().trim();
+
+                if (endPatterns.some(pattern => pattern.test(lineText))) {
+                    endLine = i - 1;
+                    break;
+                }
+
+                const isValidTableLine = isValidTableRow(line, headers) ||
+                    line.items.some(item => isDateFormat(item.text)) ||
+                    line.items.some(item => isNumericAmount(item.text)) ||
+                    (line.items.length >= headers.length - 2);
+
+                if (!isValidTableLine) {
+                    consecutiveInvalidLines++;
+                    if (consecutiveInvalidLines >= maxConsecutiveInvalid) {
+                        endLine = i - maxConsecutiveInvalid;
+                        break;
+                    }
+                } else {
+                    consecutiveInvalidLines = 0;
+                }
+            }
+
+            return Math.max(endLine, startLine);
+        }
+
+        function findCreditCardTableEnd(lineGroups, startLine, headers, pageNum) {
+            let endLine = lineGroups.length - 1;
+            let consecutiveInvalidLines = 0;
+            const maxConsecutiveInvalid = 8;
+
+            const endPatterns = [
+                /^(total|subtotal|balance|outstanding|minimum.*payment)/i,
+                /^(continued|page \d+|statement|summary)/i,
+                /^\*+|^-+|^=+$/
+            ];
+
+            for (let i = startLine; i < lineGroups.length; i++) {
+                const line = lineGroups[i];
+                const lineText = line.text.toLowerCase().trim();
+
+                if (endPatterns.some(pattern => pattern.test(lineText))) {
+                    endLine = i - 1;
+                    break;
+                }
+
+                const isValidLine = isCreditCardTransactionLine(line, headers);
+
+                if (!isValidLine) {
+                    consecutiveInvalidLines++;
+                    if (consecutiveInvalidLines >= maxConsecutiveInvalid) {
+                        endLine = i - maxConsecutiveInvalid;
+                        break;
+                    }
+                } else {
+                    consecutiveInvalidLines = 0;
+                }
+            }
+
+            return Math.max(endLine, startLine);
+        }
+
+        function isCreditCardTransactionLine(line, headers) {
+            if (line.items.length < 2) return false;
+
+            const texts = line.items.map(item => item.text.trim()).filter(t => t.length > 0);
+            if (texts.length < 2) return false;
+
+            const hasDate = texts.some(text => isDateFormat(text));
+            const hasAmount = texts.some(text => isCreditCardAmount(text));
+            const hasDescription = texts.some(text => 
+                text.length > 3 && 
+                !/^\d+$/.test(text) && 
+                !isDateFormat(text) && 
+                !isCreditCardAmount(text)
+            );
+
+            return hasDate || hasAmount || hasDescription;
+        }
+
+        function isValidTableRow(line, headers) {
+            if (line.items.length < 2) return false;
+
+            const texts = line.items.map(item => item.text.trim()).filter(t => t.length > 0);
+            if (texts.length < 2) return false;
+
+            const hasDate = texts.some(text => isDateFormat(text));
+            const hasAmount = texts.some(text => isNumericAmount(text) || isCreditCardAmount(text));
+            const hasDescription = texts.some(text =>
+                text.length > 3 &&
+                !/^\d+$/.test(text) &&
+                !isDateFormat(text) &&
+                !isNumericAmount(text) &&
+                !isCreditCardAmount(text)
+            );
+
+            return hasDate || hasAmount || hasDescription;
+        }
+
+        function extractRowsFromTableRegion(tableLines, headers, columnPositions, pageNum, tableType) {
+            const rows = [];
+
+            for (let i = 0; i < tableLines.length; i++) {
+                const line = tableLines[i];
+                if (line.items.length === 0) continue;
+                if (isNonDataLine(line.text)) continue;
+
+                const rowData = mapItemsToColumns(line.items, headers, columnPositions, tableType);
+                if (rowData && Object.keys(rowData).length >= 2) {
+                    rows.push({
+                        ...rowData,
+                        _lineNumber: i,
+                        _rawText: line.text
+                    });
+                }
+            }
+
+            return rows;
+        }
+
+        function isNonDataLine(text) {
+            const nonDataPatterns = [
+                /^(opening balance|closing balance|carried forward|brought forward)/i,
+                /^(page \d+|statement|continued)/i,
+                /^\*+$|^-+$|^=+$/,
+                /^(total|subtotal|balance|summary)/i
+            ];
+            return nonDataPatterns.some(pattern => pattern.test(text.trim()));
+        }
+
+        function mapItemsToColumns(items, headers, columnPositions, tableType) {
+            const row = {};
+            const tolerance = 80;
+
+            const columnBuckets = headers.map((header, index) => ({
+                header: header,
+                position: columnPositions[index],
+                items: [],
+                range: {
+                    start: index === 0 ? 0 : Math.round((columnPositions[index-1] + columnPositions[index]) / 2),
+                    end: index === headers.length - 1 ? 9999 : Math.round((columnPositions[index] + columnPositions[index+1]) / 2)
+                }
+            }));
+
+            items.forEach(item => {
+                let assigned = false;
+                for (let i = 0; i < columnBuckets.length; i++) {
+                    const bucket = columnBuckets[i];
+                    if (item.x >= bucket.range.start && item.x < bucket.range.end) {
+                        bucket.items.push(item.text);
+                        assigned = true;
+                        break;
+                    }
+                }
+
+                if (!assigned) {
+                    let bestColumn = 0;
+                    let minDistance = Math.abs(item.x - columnPositions[0]);
+
+                    for (let i = 1; i < columnPositions.length; i++) {
+                        const distance = Math.abs(item.x - columnPositions[i]);
+                        if (distance < minDistance) {
+                            minDistance = distance;
+                            bestColumn = i;
+                        }
+                    }
+
+                    if (minDistance <= tolerance && bestColumn < columnBuckets.length) {
+                        columnBuckets[bestColumn].items.push(item.text);
+                    }
+                }
+            });
+
+            columnBuckets.forEach(bucket => {
+                if (bucket.items.length > 0) {
+                    const combinedValue = bucket.items.join(' ').trim();
+                    if (combinedValue) {
+                        row[bucket.header] = cleanAndParseValue(combinedValue, tableType);
+                    }
+                }
+            });
+
+            if (Object.keys(row).length < 2 && items.length >= headers.length) {
+                const sequentialRow = {};
+                for (let i = 0; i < Math.min(items.length, headers.length); i++) {
+                    if (items[i].text.trim()) {
+                        sequentialRow[headers[i]] = cleanAndParseValue(items[i].text.trim(), tableType);
+                    }
+                }
+
+                if (Object.keys(sequentialRow).length > Object.keys(row).length) {
+                    return sequentialRow;
+                }
+            }
+
+            return row;
+        }
+
+        function validateAndCleanRows(rows, headers, pageNum, tableType) {
+            const validRows = [];
+
+            rows.forEach((row, index) => {
+                const cleanRow = { ...row };
+                delete cleanRow._lineNumber;
+                delete cleanRow._rawText;
+
+                const fieldCount = Object.keys(cleanRow).length;
+                const hasRequiredData = validateRequiredFields(cleanRow, headers, tableType);
+                const hasValidFormat = validateDataFormats(cleanRow);
+
+                if (fieldCount >= 2 && hasRequiredData && hasValidFormat) {
+                    validRows.push(cleanRow);
+                }
+            });
+
+            return validRows;
+        }
+
+        function validateRequiredFields(row, headers, tableType) {
+            const hasDate = Object.values(row).some(val =>
+                typeof val === 'string' && isDateFormat(val)
+            );
+
+            const hasAmount = Object.values(row).some(val =>
+                typeof val === 'number' || 
+                (typeof val === 'string' && (isNumericAmount(val) || isCreditCardAmount(val))) ||
+                (typeof val === 'object' && val.amount !== undefined)
+            );
+
+            const hasDescription = Object.values(row).some(val =>
+                typeof val === 'string' &&
+                val.length > 2 &&
+                !isDateFormat(val) &&
+                !isNumericAmount(val) &&
+                !isCreditCardAmount(val) &&
+                !/^\d+$/.test(val)
+            );
+
+            const hasAnyMeaningfulData = hasDate || hasAmount || hasDescription;
+            const nonEmptyFields = Object.values(row).filter(val =>
+                val !== null && val !== undefined && val !== ''
+            ).length;
+
+            return hasAnyMeaningfulData && nonEmptyFields >= 2;
+        }
+
+        function validateDataFormats(row) {
+            for (const [key, value] of Object.entries(row)) {
+                if (typeof value === 'string') {
+                    if ((isNumericAmount(value) || isCreditCardAmount(value)) && 
+                        isNaN(parseFloat(value.replace(/[,\s₹$]/g, '').replace(/\s*(cr|dr)\s*$/i, '')))) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        function detectTableByDataPattern(lineGroups, pageNum) {
+            let dataLineStart = -1;
+            let dataLineEnd = -1;
+            let estimatedColumns = 0;
+            let columnPositions = [];
+
+            for (let i = 0; i < lineGroups.length; i++) {
+                const line = lineGroups[i];
+                if (line.items.length < 3) continue;
+
+                const texts = line.items.map(item => item.text);
+                const hasDate = texts.some(text => isDateFormat(text));
+                const hasAmount = texts.some(text => isNumericAmount(text));
+                const hasDescription = texts.some(text =>
+                    text.length > 5 &&
+                    !isDateFormat(text) &&
+                    !isNumericAmount(text) &&
+                    !/^(opening|closing|balance|total)$/i.test(text)
+                );
+
+                if (hasDate && hasAmount && hasDescription) {
+                    if (dataLineStart === -1) {
+                        dataLineStart = i;
+                        estimatedColumns = line.items.length;
+                        columnPositions = line.items.map(item => item.x);
+                    }
+                    dataLineEnd = i;
+                }
+            }
+
+            if (dataLineStart !== -1) {
+                const genericHeaders = createGenericHeaders(estimatedColumns);
+                return {
+                    isTable: true,
+                    headerLine: -1,
+                    headers: genericHeaders,
+                    columnPositions: columnPositions,
+                    startLine: dataLineStart,
+                    endLine: dataLineEnd
+                };
+            }
+
+            return { isTable: false };
+        }
+
+        function createGenericHeaders(columnCount) {
+            const commonPatterns = [
+                ['date', 'description', 'amount', 'balance'],
+                ['date', 'description', 'debit', 'credit', 'balance'],
+                ['serial_number', 'date', 'description', 'debit', 'credit', 'balance']
+            ];
+
+            for (const pattern of commonPatterns) {
+                if (pattern.length === columnCount) {
+                    return pattern;
+                }
+            }
+
+            const headers = [];
+            for (let i = 0; i < columnCount; i++) {
+                if (i === 0) headers.push('date');
+                else if (i === 1) headers.push('description');
+                else if (i === columnCount - 1) headers.push('balance');
+                else if (i === columnCount - 2) headers.push('amount');
+                else headers.push(`column_${i + 1}`);
+            }
+            return headers;
+        }
+    </script>
+</body>
+</html>
