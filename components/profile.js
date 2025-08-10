@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { User, Phone, CreditCard, Calendar, Banknote, Edit } from 'lucide-react';
+import { User, Phone, CreditCard, Calendar, Banknote, Edit, FileText } from 'lucide-react';
 import { getUserIdFromToken } from '@/lib/tokenUtils';
 
 export default function ProfilePage() {
@@ -15,16 +15,18 @@ export default function ProfilePage() {
     firstName: ''
   });
   const [loading, setLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const [message, setMessage] = useState('');
-  const [editMode, setEditMode] = useState(false); // Start in view mode
+  const [editMode, setEditMode] = useState(false);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [authError, setAuthError] = useState('');
   const [userId, setUserId] = useState(null);
+  const [canProcessPDFs, setCanProcessPDFs] = useState(false);
+  const [pdfProcessingResult, setPdfProcessingResult] = useState(null);
 
-    useEffect(() => {
+  useEffect(() => {
     const fetchUserData = async () => {
       try {
-        // Get token from cookies or localStorage
         const token = document.cookie
           .split('; ')
           .find(row => row.startsWith('accessToken='))
@@ -35,14 +37,12 @@ export default function ProfilePage() {
           return;
         }
 
-        // First get user ID from token
         const userId = getUserIdFromToken(token);
         if (!userId) {
           throw new Error('Invalid token format');
         }
         setUserId(userId);
 
-        // Now fetch user data using the correct endpoint
         const response = await fetch('/api/users', {
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -50,8 +50,6 @@ export default function ProfilePage() {
           },
           credentials: 'include'
         });
-
-        console.log('Profile response status:', response.status);
 
         if (response.status === 401) {
           localStorage.removeItem('wealthywise_token');
@@ -67,16 +65,20 @@ export default function ProfilePage() {
         }
 
         const data = await response.json();
-        setUserData({
+        const newUserData = {
           phoneNumber: data.user?.phoneNumber || '',
           panCardNumber: data.user?.panCardNumber || '',
           dateOfBirth: data.user?.dateOfBirth || '',
           bankName: data.user?.bankName || '',
           fullName: data.user?.fullName || '',
           firstName: data.user?.firstName || ''
-        });
+        };
+        setUserData(newUserData);
         setIsDataLoaded(true);
 
+        // Check if profile is complete for PDF processing
+        const requiredFields = ['phoneNumber', 'panCardNumber', 'dateOfBirth', 'bankName', 'fullName'];
+        setCanProcessPDFs(requiredFields.every(field => newUserData[field]));
       } catch (error) {
         console.error('Profile fetch failed:', error);
         setAuthError(error.message);
@@ -94,7 +96,7 @@ export default function ProfilePage() {
     }));
   };
 
-        const handleSubmit = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setMessage('');
@@ -126,17 +128,19 @@ export default function ProfilePage() {
         setMessage('Profile updated successfully!');
         setEditMode(false);
         
-        // Update local state with the returned user data
-        if (data.user) {
-          setUserData({
-            phoneNumber: data.user.phoneNumber || '',
-            panCardNumber: data.user.panCardNumber || '',
-            dateOfBirth: data.user.dateOfBirth ? new Date(data.user.dateOfBirth).toISOString().split('T')[0] : '',
-            bankName: data.user.bankName || '',
-            fullName: data.user.fullName || '',
-            firstName: data.user.firstName || ''
-          });
-        }
+        const newUserData = {
+          phoneNumber: data.user.phoneNumber || '',
+          panCardNumber: data.user.panCardNumber || '',
+          dateOfBirth: data.user.dateOfBirth || '',
+          bankName: data.user.bankName || '',
+          fullName: data.user.fullName || '',
+          firstName: data.user.firstName || ''
+        };
+        setUserData(newUserData);
+
+        // Re-check if profile is complete for PDF processing
+        const requiredFields = ['phoneNumber', 'panCardNumber', 'dateOfBirth', 'bankName', 'fullName'];
+        setCanProcessPDFs(requiredFields.every(field => newUserData[field]));
       } else {
         setMessage(data.message || 'Failed to update profile');
       }
@@ -144,6 +148,52 @@ export default function ProfilePage() {
       setMessage(error.message || 'Network error. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleProcessPDFs = async () => {
+    if (!canProcessPDFs) {
+      setMessage('Please complete your profile before processing PDFs');
+      return;
+    }
+
+    setPdfLoading(true);
+    setMessage('');
+    setPdfProcessingResult(null);
+
+    try {
+      const token = localStorage.getItem('wealthywise_token') || 
+                   document.cookie
+                     .split('; ')
+                     .find(row => row.startsWith('accessToken='))
+                     ?.split('=')[1];
+      
+      if (!token) {
+        router.push('/');
+        return;
+      }
+
+      const response = await fetch('/api/process-pdfs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ userProfile: userData })
+      });
+
+      const result = await response.json();
+      
+      if (response.ok) {
+        setMessage('PDFs processed successfully!');
+        setPdfProcessingResult(result);
+      } else {
+        setMessage(result.error || 'Failed to process PDFs');
+      }
+    } catch (error) {
+      setMessage(error.message || 'Network error. Please try again.');
+    } finally {
+      setPdfLoading(false);
     }
   };
 
@@ -160,14 +210,10 @@ export default function ProfilePage() {
         credentials: 'include'
       });
       
-      // Clear local storage
       localStorage.removeItem('wealthywise_token');
-      
-      // Redirect to home page
       router.push('/');
     } catch (error) {
       console.error('Logout error:', error);
-      // Still redirect even if logout API fails
       localStorage.removeItem('wealthywise_token');
       router.push('/');
     }
@@ -190,6 +236,7 @@ export default function ProfilePage() {
       </div>
     );
   }
+
   if (authError) {
     return (
       <div className="max-w-3xl mx-auto p-6">
